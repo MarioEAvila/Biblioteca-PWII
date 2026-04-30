@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors    = require("cors");
 
+const { connectDb } = require("./config/db");
 const logger = require("./utils/logger");
 const { authRequired } = require("./middlewares/auth.middleware");
 const { errorHandler, notFoundHandler } = require("./middlewares/error.middleware");
@@ -40,10 +41,21 @@ app.use("/reports", authRequired, reportsRoutes);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-app.listen(PORT, async () => {
-  await logger.info("Servidor iniciado", { port: PORT });
-  console.log(`Servidor corriendo en http://localhost:${PORT}`);
-});
+async function startServer() {
+  try {
+    await connectDb();
+
+    app.listen(PORT, async () => {
+      await logger.info("Servidor iniciado", { port: PORT });
+      console.log(`Servidor corriendo en http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error("Error iniciando servidor:", err.message);
+    process.exit(1);
+  }
+}
+
+startServer();
 
 // Captura de errores no controlados a nivel de proceso
 process.on("uncaughtException", (err) => {
