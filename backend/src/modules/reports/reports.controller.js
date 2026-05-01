@@ -1,130 +1,158 @@
-const prisma = require("../../prisma");
+const mongoose = require("mongoose");
+
+const Book = require("../../models/book.model");
+const Fine = require("../../models/fine.model");
+const Hold = require("../../models/hold.model");
+const Loan = require("../../models/loan.model");
+const User = require("../../models/user.model");
 const logger = require("../../utils/logger");
 
-/**
- * REPORTE 1: Libros más prestados.
- * Cruza loanitem + book. Indicador: ranking de demanda.
- * GET /reports/most-borrowed-books?limit=10
- */
+function isValidId(id) {
+  return mongoose.isValidObjectId(id);
+}
+
+function toId(value) {
+  return value ? String(value) : null;
+}
+
+function mapLoanItem(item) {
+  const book = item.bookId;
+
+  return {
+    bookId: book?.id ?? toId(item.bookId),
+    qty: item.qty,
+    book,
+  };
+}
+
+function mapLoan(loan) {
+  const data = loan.toJSON ? loan.toJSON() : loan;
+
+  data.user = data.userId;
+  data.userId = data.user?.id ?? toId(loan.userId);
+  data.loanitem = data.loanitem.map(mapLoanItem);
+
+  return data;
+}
+
+// GET /reports/most-borrowed-books?limit=10
 async function mostBorrowedBooks(req, res) {
   try {
     const limit = Number(req.query.limit) || 10;
 
-    const grouped = await prisma.loanitem.groupBy({
-      by: ["bookId"],
-      _sum: { qty: true },
-      orderBy: { _sum: { qty: "desc" } },
-      take: limit,
-    });
+    const grouped = await Loan.aggregate([
+      { $unwind: "$loanitem" },
+      {
+        $group: {
+          _id: "$loanitem.bookId",
+          totalLoans: { $sum: "$loanitem.qty" },
+        },
+      },
+      { $sort: { totalLoans: -1 } },
+      { $limit: limit },
+    ]);
 
-    const bookIds = grouped.map(g => g.bookId);
-    const books = await prisma.book.findMany({ where: { id: { in: bookIds } } });
+    const bookIds = grouped.map((item) => item._id);
+    const books = await Book.find({ _id: { $in: bookIds } });
 
-    const result = grouped.map(g => {
-      const b = books.find(x => x.id === g.bookId);
+    const result = grouped.map((item) => {
+      const book = books.find((candidate) => toId(candidate._id) === toId(item._id));
+
       return {
-        bookId: g.bookId,
-        title: b?.title ?? "(eliminado)",
-        author: b?.author ?? "-",
-        totalLoans: g._sum.qty ?? 0,
+        bookId: toId(item._id),
+        title: book?.title ?? "(eliminado)",
+        author: book?.author ?? "-",
+        totalLoans: item.totalLoans ?? 0,
       };
     });
 
-    logger.info("Reporte: libros más prestados generado", { count: result.length });
-    res.json({ report: "Libros más prestados", data: result });
+    logger.info("Reporte: libros mas prestados generado", { count: result.length });
+    res.json({ report: "Libros mas prestados", data: result });
   } catch (err) {
     logger.error("Error en reporte mostBorrowedBooks", { error: err.message });
     res.status(500).json({ error: "Error al generar reporte" });
   }
 }
 
-/**
- * REPORTE 2: Usuarios con más multas (pendientes y pagadas).
- * Cruza fine + user. Indicador: usuarios problemáticos.
- * GET /reports/users-with-most-fines
- */
+// GET /reports/users-with-most-fines
 async function usersWithMostFines(req, res) {
   try {
-    const grouped = await prisma.fine.groupBy({
-      by: ["userId"],
-      _count: { id: true },
-      _sum: { amount: true },
-      orderBy: { _count: { id: "desc" } },
-      take: 10,
-    });
+    const grouped = await Fine.aggregate([
+      {
+        $group: {
+          _id: "$userId",
+          totalFines: { $sum: 1 },
+          totalAmount: { $sum: "$amount" },
+        },
+      },
+      { $sort: { totalFines: -1 } },
+      { $limit: 10 },
+    ]);
 
-    const userIds = grouped.map(g => g.userId);
-    const users = await prisma.user.findMany({
-      where: { id: { in: userIds } },
-      select: { id: true, name: true, email: true },
-    });
+    const userIds = grouped.map((item) => item._id);
+    const users = await User.find({ _id: { $in: userIds } }).select("name email");
 
-    const result = grouped.map(g => {
-      const u = users.find(x => x.id === g.userId);
+    const result = grouped.map((item) => {
+      const user = users.find((candidate) => toId(candidate._id) === toId(item._id));
+
       return {
-        userId: g.userId,
-        name: u?.name ?? "(eliminado)",
-        email: u?.email ?? "-",
-        totalFines: g._count.id,
-        totalAmount: g._sum.amount ?? 0,
+        userId: toId(item._id),
+        name: user?.name ?? "(eliminado)",
+        email: user?.email ?? "-",
+        totalFines: item.totalFines,
+        totalAmount: item.totalAmount ?? 0,
       };
     });
 
-    logger.info("Reporte: usuarios con más multas generado", { count: result.length });
-    res.json({ report: "Usuarios con más multas", data: result });
+    logger.info("Reporte: usuarios con mas multas generado", { count: result.length });
+    res.json({ report: "Usuarios con mas multas", data: result });
   } catch (err) {
     logger.error("Error en reporte usersWithMostFines", { error: err.message });
     res.status(500).json({ error: "Error al generar reporte" });
   }
 }
 
-/**
- * REPORTE 3: Préstamos vencidos / activos sin devolver.
- * Cruza loan + user + loanitem + book. Indicador: morosidad.
- * GET /reports/overdue-loans
- */
+// GET /reports/overdue-loans
 async function overdueLoans(req, res) {
   try {
     const now = new Date();
 
-    const loans = await prisma.loan.findMany({
-      where: {
-        status: "ACTIVE",
-        dueDate: { lt: now },
-      },
-      include: {
-        user: { select: { id: true, name: true, email: true } },
-        loanitem: { include: { book: { select: { id: true, title: true, author: true } } } },
-      },
-      orderBy: { dueDate: "asc" },
+    const loans = await Loan.find({
+      status: "ACTIVE",
+      dueDate: { $lt: now },
+    })
+      .populate("userId", "name email")
+      .populate("loanitem.bookId", "title author")
+      .sort({ dueDate: 1 });
+
+    const result = loans.map((loan) => {
+      const data = mapLoan(loan);
+
+      return {
+        loanId: data.id,
+        user: data.user,
+        loanDate: data.loanDate,
+        dueDate: data.dueDate,
+        daysOverdue: data.dueDate
+          ? Math.floor((now - new Date(data.dueDate)) / (1000 * 60 * 60 * 24))
+          : 0,
+        books: data.loanitem.map((item) => ({
+          bookId: item.bookId,
+          title: item.book?.title,
+          qty: item.qty,
+        })),
+      };
     });
 
-    const result = loans.map(l => ({
-      loanId: l.id,
-      user: l.user,
-      loanDate: l.loanDate,
-      dueDate: l.dueDate,
-      daysOverdue: l.dueDate ? Math.floor((now - l.dueDate) / (1000 * 60 * 60 * 24)) : 0,
-      books: l.loanitem.map(it => ({
-        bookId: it.bookId,
-        title: it.book?.title,
-        qty: it.qty,
-      })),
-    }));
-
-    logger.info("Reporte: préstamos vencidos generado", { count: result.length });
-    res.json({ report: "Préstamos vencidos", count: result.length, data: result });
+    logger.info("Reporte: prestamos vencidos generado", { count: result.length });
+    res.json({ report: "Prestamos vencidos", count: result.length, data: result });
   } catch (err) {
     logger.error("Error en reporte overdueLoans", { error: err.message });
     res.status(500).json({ error: "Error al generar reporte" });
   }
 }
 
-/**
- * REPORTE 4: Resumen general del sistema (dashboard).
- * Cruza casi todas las tablas. Indicadores múltiples para toma de decisiones.
- * GET /reports/dashboard
- */
+// GET /reports/dashboard
 async function dashboardSummary(req, res) {
   try {
     const now = new Date();
@@ -142,22 +170,25 @@ async function dashboardSummary(req, res) {
       pendingFinesAmount,
       activeHolds,
     ] = await Promise.all([
-      prisma.user.count({ where: { role: "USER" } }),
-      prisma.user.count({ where: { role: "ADMIN" } }),
-      prisma.book.count(),
-      prisma.book.aggregate({ _sum: { stock: true } }),
-      prisma.loan.count({ where: { status: "ACTIVE" } }),
-      prisma.loan.count({ where: { status: "RETURNED" } }),
-      prisma.loan.count({ where: { status: "ACTIVE", dueDate: { lt: now } } }),
-      prisma.fine.count({ where: { status: "PENDING" } }),
-      prisma.fine.count({ where: { status: "PAID" } }),
-      prisma.fine.aggregate({ where: { status: "PENDING" }, _sum: { amount: true } }),
-      prisma.hold.count({ where: { status: "WAITING" } }),
+      User.countDocuments({ role: "USER" }),
+      User.countDocuments({ role: "ADMIN" }),
+      Book.countDocuments(),
+      Book.aggregate([{ $group: { _id: null, total: { $sum: "$stock" } } }]),
+      Loan.countDocuments({ status: "ACTIVE" }),
+      Loan.countDocuments({ status: "RETURNED" }),
+      Loan.countDocuments({ status: "ACTIVE", dueDate: { $lt: now } }),
+      Fine.countDocuments({ status: "PENDING" }),
+      Fine.countDocuments({ status: "PAID" }),
+      Fine.aggregate([
+        { $match: { status: "PENDING" } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      Hold.countDocuments({ status: "WAITING" }),
     ]);
 
     const result = {
       usuarios: { miembros: totalUsers, administradores: totalAdmins },
-      libros:   { titulos: totalBooks, copiasTotales: totalStock._sum.stock ?? 0 },
+      libros: { titulos: totalBooks, copiasTotales: totalStock[0]?.total ?? 0 },
       prestamos: {
         activos: activeLoans,
         devueltos: returnedLoans,
@@ -166,7 +197,7 @@ async function dashboardSummary(req, res) {
       multas: {
         pendientes: pendingFines,
         pagadas: paidFines,
-        montoPendiente: pendingFinesAmount._sum.amount ?? 0,
+        montoPendiente: pendingFinesAmount[0]?.total ?? 0,
       },
       listaEspera: { activas: activeHolds },
       generadoEn: now,
@@ -180,49 +211,48 @@ async function dashboardSummary(req, res) {
   }
 }
 
-/**
- * REPORTE 5 (extra): Actividad por usuario.
- * Cruza loan + fine + hold para un userId específico.
- * GET /reports/user-activity/:userId
- */
+// GET /reports/user-activity/:userId
 async function userActivity(req, res) {
   try {
-    const userId = Number(req.params.userId);
-    if (Number.isNaN(userId)) return res.status(400).json({ error: "userId inválido" });
+    const { userId } = req.params;
+    if (!isValidId(userId)) return res.status(400).json({ error: "userId invalido" });
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, name: true, email: true, role: true, createdAt: true },
-    });
+    const user = await User.findById(userId).select("name email role createdAt");
     if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
 
     const [loans, fines, holds] = await Promise.all([
-      prisma.loan.findMany({
-        where: { userId },
-        include: { loanitem: { include: { book: true } } },
-        orderBy: { loanDate: "desc" },
-      }),
-      prisma.fine.findMany({ where: { userId }, orderBy: { createdAt: "desc" } }),
-      prisma.hold.findMany({
-        where: { userId },
-        include: { book: { select: { id: true, title: true } } },
-      }),
+      Loan.find({ userId })
+        .populate("loanitem.bookId")
+        .sort({ loanDate: -1 }),
+      Fine.find({ userId }).sort({ createdAt: -1 }),
+      Hold.find({ userId })
+        .populate("bookId", "title")
+        .sort({ createdAt: -1 }),
     ]);
+
+    const mappedLoans = loans.map(mapLoan);
+    const mappedHolds = holds.map((hold) => {
+      const data = hold.toJSON();
+      data.book = data.bookId;
+      data.bookId = data.book?.id ?? toId(hold.bookId);
+      return data;
+    });
 
     const result = {
       user,
       resumen: {
         totalPrestamos: loans.length,
-        prestamosActivos: loans.filter(l => l.status === "ACTIVE").length,
+        prestamosActivos: loans.filter((loan) => loan.status === "ACTIVE").length,
         totalMultas: fines.length,
-        multasPendientes: fines.filter(f => f.status === "PENDING").length,
-        montoPendiente: fines.filter(f => f.status === "PENDING")
-                              .reduce((acc, f) => acc + f.amount, 0),
-        listasEsperaActivas: holds.filter(h => h.status === "WAITING").length,
+        multasPendientes: fines.filter((fine) => fine.status === "PENDING").length,
+        montoPendiente: fines
+          .filter((fine) => fine.status === "PENDING")
+          .reduce((acc, fine) => acc + fine.amount, 0),
+        listasEsperaActivas: holds.filter((hold) => hold.status === "WAITING").length,
       },
-      prestamos: loans,
+      prestamos: mappedLoans,
       multas: fines,
-      listasEspera: holds,
+      listasEspera: mappedHolds,
     };
 
     logger.info("Reporte: actividad de usuario generado", { userId });
