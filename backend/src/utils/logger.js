@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const prisma = require("../prisma");
+const Log = require("../models/log.model");
 
 // Carpeta de logs — se escribe en temp del sistema para evitar
 // que Live Server detecte cambios y recargue el navegador en dev.
@@ -24,12 +24,10 @@ function writeToFile(level, message, meta) {
 
 async function writeToDb(level, message, meta) {
   try {
-    await prisma.log.create({
-      data: {
-        level,
-        message,
-        meta: meta ?? undefined,
-      },
+    await Log.create({
+      level,
+      message,
+      meta: meta ?? null,
     });
   } catch (err) {
     // Si la BD falla, al menos no truene el server
