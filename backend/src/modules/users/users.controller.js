@@ -1,15 +1,26 @@
-const prisma = require("../../prisma");
+const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
+
+const User = require("../../models/user.model");
 const { createUserSchema, updateUserSchema } = require("./users.schemas");
+
+function isValidId(id) {
+  return mongoose.isValidObjectId(id);
+}
+
+function sanitizeUser(user) {
+  if (!user) return null;
+
+  const data = user.toJSON();
+  delete data.password;
+  return data;
+}
 
 // GET /users
 async function listUsers(req, res) {
   try {
-    const users = await prisma.user.findMany({
-      select: { id: true, name: true, email: true, role: true, createdAt: true },
-      orderBy: { id: "asc" },
-    });
-    res.json(users);
+    const users = await User.find().sort({ createdAt: 1 });
+    res.json(users.map(sanitizeUser));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Error al consultar usuarios" });
@@ -21,27 +32,33 @@ async function createUser(req, res) {
   try {
     const parsed = createUserSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Body inválido", details: parsed.error.issues });
+      return res.status(400).json({ error: "Body invalido", details: parsed.error.issues });
     }
 
-    const { name, email, password, role } = parsed.data;
+    const { name, email, password, role, phone } = parsed.data;
+    const normalizedEmail = email.toLowerCase();
+
+    const exists = await User.exists({ email: normalizedEmail });
+    if (exists) {
+      return res.status(409).json({ error: "Ese email ya esta registrado" });
+    }
 
     const hash = await bcrypt.hash(password, 10);
 
-    const created = await prisma.user.create({
-      data: { name, email, password: hash, role: role ?? undefined },
-      select: { id: true, name: true, email: true, role: true, createdAt: true },
+    const created = await User.create({
+      name,
+      email: normalizedEmail,
+      password: hash,
+      role: role ?? "USER",
+      phone: phone ?? null,
     });
 
-    res.status(201).json(created);
+    res.status(201).json(sanitizeUser(created));
   } catch (err) {
     console.error(err);
-
-    // Email duplicado (unique)
-    if (err.code === "P2002") {
-      return res.status(409).json({ error: "Ese email ya está registrado" });
+    if (err.code === 11000) {
+      return res.status(409).json({ error: "Ese email ya esta registrado" });
     }
-
     res.status(500).json({ error: "Error al crear usuario" });
   }
 }
@@ -49,33 +66,38 @@ async function createUser(req, res) {
 // PUT /users/:id
 async function updateUser(req, res) {
   try {
-    const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ error: "ID inválido" });
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ error: "ID invalido" });
 
     const parsed = updateUserSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Body inválido", details: parsed.error.issues });
+      return res.status(400).json({ error: "Body invalido", details: parsed.error.issues });
     }
 
-    const exists = await prisma.user.findUnique({ where: { id } });
+    const exists = await User.findById(id);
     if (!exists) return res.status(404).json({ error: "Usuario no encontrado" });
 
     const data = { ...parsed.data };
+
+    if (data.email) {
+      data.email = data.email.toLowerCase();
+    }
 
     if (data.password) {
       data.password = await bcrypt.hash(data.password, 10);
     }
 
-    const updated = await prisma.user.update({
-      where: { id },
-      data,
-      select: { id: true, name: true, email: true, role: true, createdAt: true },
+    const updated = await User.findByIdAndUpdate(id, data, {
+      new: true,
+      runValidators: true,
     });
 
-    res.json(updated);
+    res.json(sanitizeUser(updated));
   } catch (err) {
     console.error(err);
-    if (err.code === "P2002") return res.status(409).json({ error: "Ese email ya está registrado" });
+    if (err.code === 11000) {
+      return res.status(409).json({ error: "Ese email ya esta registrado" });
+    }
     res.status(500).json({ error: "Error al actualizar usuario" });
   }
 }
@@ -83,13 +105,13 @@ async function updateUser(req, res) {
 // DELETE /users/:id
 async function deleteUser(req, res) {
   try {
-    const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ error: "ID inválido" });
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ error: "ID invalido" });
 
-    const exists = await prisma.user.findUnique({ where: { id } });
+    const exists = await User.findById(id);
     if (!exists) return res.status(404).json({ error: "Usuario no encontrado" });
 
-    await prisma.user.delete({ where: { id } });
+    await User.findByIdAndDelete(id);
     res.json({ status: "ok", message: "Usuario eliminado" });
   } catch (err) {
     console.error(err);

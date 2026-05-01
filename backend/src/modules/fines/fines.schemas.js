@@ -1,8 +1,10 @@
 const { z } = require("zod");
 
+const objectIdSchema = z.string().regex(/^[0-9a-fA-F]{24}$/, "ObjectId invalido");
+
 const createFineSchema = z.object({
-  userId: z.number().int().positive(),
-  loanId: z.number().int().positive(),
+  userId: objectIdSchema,
+  loanId: objectIdSchema,
   amount: z.number().positive(),
   reason: z.string().min(1, "reason es requerido"),
 });
@@ -12,7 +14,7 @@ const updateFineSchema = z.object({
   reason: z.string().min(1).optional(),
   status: z.enum(["PENDING", "PAID"]).optional(),
 }).refine((data) => Object.keys(data).length > 0, {
-  message: "Envía al menos un campo para actualizar",
+  message: "Envia al menos un campo para actualizar",
 });
 
-module.exports = { createFineSchema, updateFineSchema };
+module.exports = { createFineSchema, updateFineSchema, objectIdSchema };
