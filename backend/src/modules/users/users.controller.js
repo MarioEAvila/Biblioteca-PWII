@@ -35,7 +35,7 @@ async function createUser(req, res) {
       return res.status(400).json({ error: "Body invalido", details: parsed.error.issues });
     }
 
-    const { name, email, password, role } = parsed.data;
+    const { name, email, password, role, phone } = parsed.data;
     const normalizedEmail = email.toLowerCase();
 
     const exists = await User.exists({ email: normalizedEmail });
@@ -50,6 +50,7 @@ async function createUser(req, res) {
       email: normalizedEmail,
       password: hash,
       role: role ?? "USER",
+      phone: phone ?? null,
     });
 
     res.status(201).json(sanitizeUser(created));

@@ -17,6 +17,7 @@ const registerSchema = z.object({
   name: z.string().min(1, "Nombre requerido"),
   email: z.string().email("Email invalido"),
   password: z.string().min(6, "Password minimo 6 caracteres"),
+  phone: z.string().min(1, "Telefono requerido").optional(),
 });
 
 function sanitizeUser(user) {
@@ -70,7 +71,7 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ error: "Datos invalidos", details: parsed.error.issues });
     }
 
-    const { name, email, password } = parsed.data;
+    const { name, email, password, phone } = parsed.data;
     const normalizedEmail = email.toLowerCase();
 
     const exists = await User.exists({ email: normalizedEmail });
@@ -85,6 +86,7 @@ router.post("/register", async (req, res) => {
       email: normalizedEmail,
       password: hash,
       role: "USER",
+      phone: phone ?? null,
     });
 
     res.status(201).json({

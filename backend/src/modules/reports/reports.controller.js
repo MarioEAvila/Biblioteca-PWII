@@ -222,6 +222,7 @@ async function userActivity(req, res) {
 
     const [loans, fines, holds] = await Promise.all([
       Loan.find({ userId })
+        .populate("userId", "name email")
         .populate("loanitem.bookId")
         .sort({ loanDate: -1 }),
       Fine.find({ userId }).sort({ createdAt: -1 }),
