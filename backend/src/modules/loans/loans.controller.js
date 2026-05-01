@@ -1,9 +1,53 @@
-const prisma = require("../../prisma");
+const mongoose = require("mongoose");
+
+const Book = require("../../models/book.model");
+const Fine = require("../../models/fine.model");
+const Loan = require("../../models/loan.model");
+const User = require("../../models/user.model");
 const logger = require("../../utils/logger");
 const { createLoanSchema } = require("./loans.schemas");
 
-// Duración por defecto de un préstamo en días
+// Duracion por defecto de un prestamo en dias.
 const LOAN_DAYS = 14;
+
+function isValidId(id) {
+  return mongoose.isValidObjectId(id);
+}
+
+function sameId(a, b) {
+  return String(a) === String(b);
+}
+
+async function hydrateLoan(loanOrId, includeFines = false) {
+  const query = Loan.findById(loanOrId)
+    .populate("userId", "name email")
+    .populate("loanitem.bookId");
+
+  const loan = await query;
+  if (!loan) return null;
+
+  const data = loan.toJSON();
+
+  data.user = data.userId;
+  data.userId = data.user?.id ?? String(loan.userId);
+  data.loanitem = data.loanitem.map((item) => ({
+    ...item,
+    book: item.bookId,
+    bookId: item.bookId?.id ?? String(item.bookId),
+  }));
+
+  if (includeFines) {
+    data.fine = await Fine.find({ loanId: loan.id }).sort({ createdAt: -1 });
+  }
+
+  return data;
+}
+
+async function restoreStock(items) {
+  for (const item of items) {
+    await Book.findByIdAndUpdate(item.bookId, { $inc: { stock: item.qty } });
+  }
+}
 
 // GET /loans  (con filtros opcionales: ?userId=X, ?status=ACTIVE)
 async function listLoans(req, res) {
@@ -11,230 +55,172 @@ async function listLoans(req, res) {
     const where = {};
 
     if (req.query.userId) {
-      const userId = Number(req.query.userId);
-      if (!Number.isNaN(userId)) where.userId = userId;
+      if (!isValidId(req.query.userId)) return res.status(400).json({ error: "userId invalido" });
+      where.userId = req.query.userId;
     }
 
     if (req.query.status) {
-      where.status = req.query.status; // "ACTIVE", "RETURNED", "OVERDUE"
+      where.status = req.query.status;
     }
 
-    const loans = await prisma.loan.findMany({
-      where,
-      orderBy: { id: "desc" },
-      include: {
-        user: { select: { id: true, name: true, email: true } },
-        loanitem: { include: { book: true } },
-      },
-    });
+    const loans = await Loan.find(where).sort({ createdAt: -1 });
+    const result = await Promise.all(loans.map((loan) => hydrateLoan(loan.id)));
 
-    res.json(loans);
+    res.json(result);
   } catch (err) {
-    logger.error("Error al listar préstamos", { error: err.message });
-    res.status(500).json({ error: "Error al consultar préstamos" });
+    logger.error("Error al listar prestamos", { error: err.message });
+    res.status(500).json({ error: "Error al consultar prestamos" });
   }
 }
 
 // GET /loans/:id
 async function getLoan(req, res) {
   try {
-    const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ error: "ID inválido" });
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ error: "ID invalido" });
 
-    const loan = await prisma.loan.findUnique({
-      where: { id },
-      include: {
-        user: { select: { id: true, name: true, email: true } },
-        loanitem: { include: { book: true } },
-      },
-    });
+    const loan = await hydrateLoan(id);
+    if (!loan) return res.status(404).json({ error: "Prestamo no encontrado" });
 
-    if (!loan) return res.status(404).json({ error: "Préstamo no encontrado" });
     res.json(loan);
   } catch (err) {
-    logger.error("Error al obtener préstamo", { error: err.message });
-    res.status(500).json({ error: "Error al consultar préstamo" });
+    logger.error("Error al obtener prestamo", { error: err.message });
+    res.status(500).json({ error: "Error al consultar prestamo" });
   }
 }
 
 // POST /loans  (crea loan + loanitems + descuenta stock + calcula dueDate)
 async function createLoan(req, res) {
-  logger.info("Creando préstamo", { body: req.body });
+  logger.info("Creando prestamo", { body: req.body });
+
   try {
     const parsed = createLoanSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Body inválido", details: parsed.error.issues });
+      return res.status(400).json({ error: "Body invalido", details: parsed.error.issues });
     }
 
     const { userId, items } = parsed.data;
 
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
 
-    const bookIds = items.map(i => i.bookId);
-    const books = await prisma.book.findMany({ where: { id: { in: bookIds } } });
+    const bookIds = items.map((item) => item.bookId);
+    const uniqueBookIds = [...new Set(bookIds)];
+    const books = await Book.find({ _id: { $in: uniqueBookIds } });
 
-    if (books.length !== bookIds.length) {
-      return res.status(400).json({ error: "Uno o más libros no existen" });
+    if (books.length !== uniqueBookIds.length) {
+      return res.status(400).json({ error: "Uno o mas libros no existen" });
     }
 
-    for (const it of items) {
-      const b = books.find(x => x.id === it.bookId);
-      if (b.stock < it.qty) {
-        return res.status(409).json({ error: `Stock insuficiente para bookId=${it.bookId}` });
+    for (const item of items) {
+      const book = books.find((candidate) => sameId(candidate.id, item.bookId));
+      if (!book || book.stock < item.qty) {
+        return res.status(409).json({ error: `Stock insuficiente para bookId=${item.bookId}` });
       }
     }
 
-    // Fecha de devolución programada: hoy + LOAN_DAYS días
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + LOAN_DAYS);
 
-    const result = await prisma.$transaction(async (tx) => {
-      const loan = await tx.loan.create({
-        data: { userId, status: "ACTIVE", dueDate },
-      });
-
-      await tx.loanitem.createMany({
-        data: items.map(it => ({
-          loanId: loan.id,
-          bookId: it.bookId,
-          qty: it.qty,
-        })),
-      });
-
-      for (const it of items) {
-        await tx.book.update({
-          where: { id: it.bookId },
-          data: { stock: { decrement: it.qty } },
-        });
-      }
-
-      return tx.loan.findUnique({
-        where: { id: loan.id },
-        include: {
-          user: { select: { id: true, name: true, email: true } },
-          loanitem: { include: { book: true } },
-        },
-      });
+    const loan = await Loan.create({
+      userId,
+      status: "ACTIVE",
+      dueDate,
+      loanitem: items,
     });
 
-    logger.info("Préstamo creado", { loanId: result.id, userId });
+    try {
+      for (const item of items) {
+        await Book.findByIdAndUpdate(item.bookId, { $inc: { stock: -item.qty } });
+      }
+    } catch (err) {
+      await Loan.findByIdAndDelete(loan.id);
+      throw err;
+    }
+
+    const result = await hydrateLoan(loan.id);
+    logger.info("Prestamo creado", { loanId: result.id, userId });
+
     res.status(201).json(result);
   } catch (err) {
-    logger.error("Error al crear préstamo", { error: err.message });
-    res.status(500).json({ error: "Error al crear préstamo" });
+    logger.error("Error al crear prestamo", { error: err.message });
+    res.status(500).json({ error: "Error al crear prestamo" });
   }
 }
 
 // PUT /loans/:id/return  (marca devuelto + regresa stock + crea multa si hay atraso)
 async function returnLoan(req, res) {
-  logger.info("Devolviendo préstamo", { loanId: req.params.id });
+  logger.info("Devolviendo prestamo", { loanId: req.params.id });
+
   try {
-    const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ error: "ID inválido" });
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ error: "ID invalido" });
 
-    const loan = await prisma.loan.findUnique({
-      where: { id },
-      include: { loanitem: true },
-    });
-
-    if (!loan) return res.status(404).json({ error: "Préstamo no encontrado" });
+    const loan = await Loan.findById(id);
+    if (!loan) return res.status(404).json({ error: "Prestamo no encontrado" });
     if (loan.status === "RETURNED") {
-      return res.status(409).json({ error: "El préstamo ya está devuelto" });
+      return res.status(409).json({ error: "El prestamo ya esta devuelto" });
     }
 
     const now = new Date();
-
-    // ¿Hay atraso?
     let fineCreated = null;
+
     if (loan.dueDate && now > loan.dueDate) {
       const daysLate = Math.ceil((now - loan.dueDate) / (1000 * 60 * 60 * 24));
-      const amount = daysLate * 10; // $10 por día de atraso
-
       fineCreated = {
         userId: loan.userId,
         loanId: loan.id,
-        amount,
-        reason: `Devolución con ${daysLate} día(s) de atraso`,
+        amount: daysLate * 10,
+        reason: `Devolucion con ${daysLate} dia(s) de atraso`,
         status: "PENDING",
       };
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
-      for (const it of loan.loanitem) {
-        await tx.book.update({
-          where: { id: it.bookId },
-          data: { stock: { increment: it.qty } },
-        });
-      }
+    await restoreStock(loan.loanitem);
 
-      await tx.loan.update({
-        where: { id },
-        data: { status: "RETURNED", returnDate: now },
-      });
-
-      if (fineCreated) {
-        await tx.fine.create({ data: fineCreated });
-      }
-
-      return tx.loan.findUnique({
-        where: { id },
-        include: {
-          user: { select: { id: true, name: true, email: true } },
-          loanitem: { include: { book: true } },
-          fine: true,
-        },
-      });
-    });
+    loan.status = "RETURNED";
+    loan.returnDate = now;
+    await loan.save();
 
     if (fineCreated) {
-      logger.warn("Préstamo devuelto con atraso - multa generada", {
+      await Fine.create(fineCreated);
+      logger.warn("Prestamo devuelto con atraso - multa generada", {
         loanId: id,
         amount: fineCreated.amount,
       });
     } else {
-      logger.info("Préstamo devuelto a tiempo", { loanId: id });
+      logger.info("Prestamo devuelto a tiempo", { loanId: id });
     }
 
+    const updated = await hydrateLoan(id, true);
     res.json(updated);
   } catch (err) {
-    logger.error("Error al devolver préstamo", { error: err.message });
-    res.status(500).json({ error: "Error al devolver préstamo" });
+    logger.error("Error al devolver prestamo", { error: err.message });
+    res.status(500).json({ error: "Error al devolver prestamo" });
   }
 }
 
-// DELETE /loans/:id (solo admin; cancela préstamo y regresa stock)
+// DELETE /loans/:id (cancela prestamo y regresa stock si estaba activo)
 async function deleteLoan(req, res) {
   try {
-    const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ error: "ID inválido" });
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ error: "ID invalido" });
 
-    const loan = await prisma.loan.findUnique({
-      where: { id },
-      include: { loanitem: true },
-    });
-    if (!loan) return res.status(404).json({ error: "Préstamo no encontrado" });
+    const loan = await Loan.findById(id);
+    if (!loan) return res.status(404).json({ error: "Prestamo no encontrado" });
 
-    await prisma.$transaction(async (tx) => {
-      // Si estaba activo, regresa el stock
-      if (loan.status === "ACTIVE") {
-        for (const it of loan.loanitem) {
-          await tx.book.update({
-            where: { id: it.bookId },
-            data: { stock: { increment: it.qty } },
-          });
-        }
-      }
-      // Borrar items primero (FK)
-      await tx.loanitem.deleteMany({ where: { loanId: id } });
-      await tx.loan.delete({ where: { id } });
-    });
+    if (loan.status === "ACTIVE") {
+      await restoreStock(loan.loanitem);
+    }
 
-    logger.info("Préstamo eliminado", { loanId: id });
-    res.json({ status: "ok", message: "Préstamo eliminado" });
+    await Fine.deleteMany({ loanId: loan.id });
+    await Loan.findByIdAndDelete(id);
+
+    logger.info("Prestamo eliminado", { loanId: id });
+    res.json({ status: "ok", message: "Prestamo eliminado" });
   } catch (err) {
-    logger.error("Error al eliminar préstamo", { error: err.message });
-    res.status(500).json({ error: "Error al eliminar préstamo" });
+    logger.error("Error al eliminar prestamo", { error: err.message });
+    res.status(500).json({ error: "Error al eliminar prestamo" });
   }
 }
 
