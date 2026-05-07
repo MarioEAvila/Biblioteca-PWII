@@ -1,4 +1,5 @@
 const express = require("express");
+const { adminRequired } = require("../middlewares/auth.middleware");
 const router = express.Router();
 
 const {
@@ -8,6 +9,8 @@ const {
   dashboardSummary,
   userActivity,
 } = require("../modules/reports/reports.controller");
+
+router.use(adminRequired);
 
 router.get("/most-borrowed-books", mostBorrowedBooks);
 router.get("/users-with-most-fines", usersWithMostFines);
