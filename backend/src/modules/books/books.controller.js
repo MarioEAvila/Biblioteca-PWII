@@ -11,8 +11,8 @@ function isValidId(id) {
 function normalizeBookData(data) {
   return {
     ...data,
-    genre: data.genre === "" ? null : data.genre,
-    isbn: data.isbn === "" ? null : data.isbn,
+    genre: data.genre === "" || data.genre === undefined ? null : data.genre,
+    isbn: data.isbn === "" || data.isbn === undefined ? null : data.isbn,
   };
 }
 
@@ -86,10 +86,11 @@ async function updateBook(req, res) {
 
     res.json(updated);
   } catch (err) {
+    logger.error("Error al actualizar libro", { bookId: req.params.id, error: err.message });
     if (err.code === 11000) {
       return res.status(409).json({ error: "Ya existe un libro con ese ISBN" });
     }
-    res.status(500).json({ error: "Error interno" });
+    res.status(500).json({ error: "Error al actualizar libro" });
   }
 }
 
@@ -102,9 +103,11 @@ async function deleteBook(req, res) {
     const deleted = await Book.findByIdAndDelete(id);
     if (!deleted) return res.status(404).json({ error: "Libro no encontrado" });
 
+    logger.info("Libro eliminado", { bookId: id });
     res.json({ status: "ok", message: "Libro eliminado" });
   } catch (err) {
-    res.status(500).json({ error: "Error interno" });
+    logger.error("Error al eliminar libro", { bookId: req.params.id, error: err.message });
+    res.status(500).json({ error: "Error al eliminar libro" });
   }
 }
 

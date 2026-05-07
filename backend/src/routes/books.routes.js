@@ -1,4 +1,5 @@
 const express = require("express");
+const { adminRequired } = require("../middlewares/auth.middleware");
 
 const {
   listBooks,
@@ -12,8 +13,8 @@ const router = express.Router();
 
 router.get("/", listBooks);
 router.get("/:id", getBook);
-router.post("/", createBook);
-router.put("/:id", updateBook);
-router.delete("/:id", deleteBook);
+router.post("/", adminRequired, createBook);
+router.put("/:id", adminRequired, updateBook);
+router.delete("/:id", adminRequired, deleteBook);
 
 module.exports = router;
