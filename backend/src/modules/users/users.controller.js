@@ -27,6 +27,22 @@ async function listUsers(req, res) {
   }
 }
 
+// GET /users/:id
+async function getUser(req, res) {
+  try {
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ error: "ID invalido" });
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    res.json(sanitizeUser(user));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error al consultar usuario" });
+  }
+}
+
 // POST /users
 async function createUser(req, res) {
   try {
@@ -119,4 +135,4 @@ async function deleteUser(req, res) {
   }
 }
 
-module.exports = { listUsers, createUser, updateUser, deleteUser };
+module.exports = { listUsers, getUser, createUser, updateUser, deleteUser };

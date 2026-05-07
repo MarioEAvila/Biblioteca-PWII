@@ -15,6 +15,15 @@ function toId(value) {
   return value ? String(value) : null;
 }
 
+function parseLimit(value, defaultValue = 10, maxValue = 50) {
+  if (value === undefined) return defaultValue;
+
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit <= 0) return null;
+
+  return Math.min(limit, maxValue);
+}
+
 function mapLoanItem(item) {
   const book = item.bookId;
 
@@ -38,7 +47,8 @@ function mapLoan(loan) {
 // GET /reports/most-borrowed-books?limit=10
 async function mostBorrowedBooks(req, res) {
   try {
-    const limit = Number(req.query.limit) || 10;
+    const limit = parseLimit(req.query.limit);
+    if (!limit) return res.status(400).json({ error: "limit invalido" });
 
     const grouped = await Loan.aggregate([
       { $unwind: "$loanitem" },
@@ -77,6 +87,9 @@ async function mostBorrowedBooks(req, res) {
 // GET /reports/users-with-most-fines
 async function usersWithMostFines(req, res) {
   try {
+    const limit = parseLimit(req.query.limit);
+    if (!limit) return res.status(400).json({ error: "limit invalido" });
+
     const grouped = await Fine.aggregate([
       {
         $group: {
@@ -86,7 +99,7 @@ async function usersWithMostFines(req, res) {
         },
       },
       { $sort: { totalFines: -1 } },
-      { $limit: 10 },
+      { $limit: limit },
     ]);
 
     const userIds = grouped.map((item) => item._id);

@@ -1,12 +1,7 @@
 const mongoose = require("mongoose");
+const env = require("./env");
 
 async function connectDb() {
-  const uri = process.env.MONGODB_URI;
-
-  if (!uri) {
-    throw new Error("MONGODB_URI no esta configurada en .env");
-  }
-
   mongoose.connection.on("connected", () => {
     console.log("MongoDB conectado");
   });
@@ -19,7 +14,7 @@ async function connectDb() {
     console.warn("MongoDB desconectado");
   });
 
-  await mongoose.connect(uri);
+  await mongoose.connect(env.MONGODB_URI);
 }
 
 module.exports = { connectDb };

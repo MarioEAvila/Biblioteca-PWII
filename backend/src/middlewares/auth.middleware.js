@@ -1,7 +1,8 @@
 const jwt = require("jsonwebtoken");
 const logger = require("../utils/logger");
+const env = require("../config/env");
 
-const JWT_SECRET = process.env.JWT_SECRET || "biblioteca_secret_key";
+const JWT_SECRET = env.JWT_SECRET;
 
 /**
  * Verifica que el request traiga un token JWT válido en el header

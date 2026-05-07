@@ -1,4 +1,5 @@
 const express = require("express");
+const { adminRequired } = require("../middlewares/auth.middleware");
 const router = express.Router();
 
 const {
@@ -12,7 +13,7 @@ const {
 router.get("/", listHolds);
 router.get("/:id", getHold);
 router.post("/", createHold);
-router.put("/:id", updateHold);
+router.put("/:id", adminRequired, updateHold);
 router.delete("/:id", deleteHold);
 
 module.exports = router;

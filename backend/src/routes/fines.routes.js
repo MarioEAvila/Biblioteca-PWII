@@ -1,4 +1,5 @@
 const express = require("express");
+const { adminRequired } = require("../middlewares/auth.middleware");
 const router = express.Router();
 
 const {
@@ -11,8 +12,8 @@ const {
 
 router.get("/", listFines);
 router.get("/:id", getFine);
-router.post("/", createFine);
+router.post("/", adminRequired, createFine);
 router.put("/:id", updateFine);
-router.delete("/:id", deleteFine);
+router.delete("/:id", adminRequired, deleteFine);
 
 module.exports = router;

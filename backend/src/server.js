@@ -1,7 +1,7 @@
-require("dotenv").config();
 const express = require("express");
 const cors    = require("cors");
 
+const env = require("./config/env");
 const { connectDb } = require("./config/db");
 const logger = require("./utils/logger");
 const { authRequired } = require("./middlewares/auth.middleware");
@@ -16,9 +16,24 @@ const finesRoutes   = require("./routes/fines.routes");
 const reportsRoutes = require("./routes/reports.routes");
 
 const app  = express();
-const PORT = process.env.PORT || 3000;
+const PORT = env.PORT;
 
-app.use(cors());
+const allowedOrigins = env.FRONTEND_ORIGIN
+  ? env.FRONTEND_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean)
+  : [];
+
+const corsOptions = allowedOrigins.length > 0
+  ? {
+      origin(origin, callback) {
+        if (!origin || allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+        return callback(new Error("Origen no permitido por CORS"));
+      },
+    }
+  : {};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Health check (público)
