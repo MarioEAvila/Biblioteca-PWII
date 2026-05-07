@@ -5,6 +5,7 @@ const { z } = require("zod");
 
 const User = require("../models/user.model");
 const env = require("../config/env");
+const { authRequired } = require("../middlewares/auth.middleware");
 
 const router = express.Router();
 const JWT_SECRET = env.JWT_SECRET;
@@ -37,7 +38,7 @@ router.post("/login", async (req, res) => {
     const { email, password } = parsed.data;
     const normalizedEmail = email.toLowerCase();
 
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await User.findOne({ email: normalizedEmail }).select("+password");
     if (!user) {
       return res.status(401).json({ error: "Credenciales incorrectas" });
     }
@@ -100,6 +101,20 @@ router.post("/register", async (req, res) => {
       return res.status(409).json({ error: "Ese email ya esta registrado" });
     }
     res.status(500).json({ error: "Error al registrar usuario" });
+  }
+});
+
+router.get("/me", authRequired, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
+    res.json({ user: sanitizeUser(user) });
+  } catch (err) {
+    console.error("Error al consultar sesion:", err?.stack || err?.message || err);
+    res.status(500).json({ error: "Error al consultar sesion" });
   }
 });
 
