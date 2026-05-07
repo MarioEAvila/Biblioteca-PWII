@@ -9,6 +9,7 @@ const { createLoanSchema } = require("./loans.schemas");
 
 // Duracion por defecto de un prestamo en dias.
 const LOAN_DAYS = 14;
+const LOAN_STATUSES = new Set(["ACTIVE", "RETURNED", "OVERDUE"]);
 
 function isValidId(id) {
   return mongoose.isValidObjectId(id);
@@ -16,6 +17,29 @@ function isValidId(id) {
 
 function sameId(a, b) {
   return String(a) === String(b);
+}
+
+function isAdmin(req) {
+  return req.user?.role === "ADMIN";
+}
+
+function isOwnUser(req, userId) {
+  return sameId(req.user?.id, userId);
+}
+
+function aggregateItems(items) {
+  const grouped = new Map();
+
+  for (const item of items) {
+    const key = String(item.bookId);
+    grouped.set(key, (grouped.get(key) || 0) + item.qty);
+  }
+
+  return [...grouped.entries()].map(([bookId, qty]) => ({ bookId, qty }));
+}
+
+function forbidden(res) {
+  return res.status(403).json({ error: "No tienes permisos para operar este prestamo" });
 }
 
 async function hydrateLoan(loanOrId, includeFines = false) {
@@ -49,6 +73,31 @@ async function restoreStock(items) {
   }
 }
 
+async function decrementStock(items) {
+  const decremented = [];
+
+  try {
+    for (const item of items) {
+      const updated = await Book.findOneAndUpdate(
+        { _id: item.bookId, stock: { $gte: item.qty } },
+        { $inc: { stock: -item.qty } },
+        { returnDocument: "after" }
+      );
+
+      if (!updated) {
+        const err = new Error(`Stock insuficiente para bookId=${item.bookId}`);
+        err.status = 409;
+        throw err;
+      }
+
+      decremented.push(item);
+    }
+  } catch (err) {
+    await restoreStock(decremented);
+    throw err;
+  }
+}
+
 // GET /loans  (con filtros opcionales: ?userId=X, ?status=ACTIVE)
 async function listLoans(req, res) {
   try {
@@ -56,10 +105,16 @@ async function listLoans(req, res) {
 
     if (req.query.userId) {
       if (!isValidId(req.query.userId)) return res.status(400).json({ error: "userId invalido" });
+      if (!isAdmin(req) && !isOwnUser(req, req.query.userId)) return forbidden(res);
       where.userId = req.query.userId;
+    } else if (!isAdmin(req)) {
+      where.userId = req.user.id;
     }
 
     if (req.query.status) {
+      if (!LOAN_STATUSES.has(req.query.status)) {
+        return res.status(400).json({ error: "status invalido" });
+      }
       where.status = req.query.status;
     }
 
@@ -81,6 +136,7 @@ async function getLoan(req, res) {
 
     const loan = await hydrateLoan(id);
     if (!loan) return res.status(404).json({ error: "Prestamo no encontrado" });
+    if (!isAdmin(req) && !isOwnUser(req, loan.userId)) return forbidden(res);
 
     res.json(loan);
   } catch (err) {
@@ -100,11 +156,13 @@ async function createLoan(req, res) {
     }
 
     const { userId, items } = parsed.data;
+    if (!isAdmin(req) && !isOwnUser(req, userId)) return forbidden(res);
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
 
-    const bookIds = items.map((item) => item.bookId);
+    const loanItems = aggregateItems(items);
+    const bookIds = loanItems.map((item) => item.bookId);
     const uniqueBookIds = [...new Set(bookIds)];
     const books = await Book.find({ _id: { $in: uniqueBookIds } });
 
@@ -112,7 +170,7 @@ async function createLoan(req, res) {
       return res.status(400).json({ error: "Uno o mas libros no existen" });
     }
 
-    for (const item of items) {
+    for (const item of loanItems) {
       const book = books.find((candidate) => sameId(candidate.id, item.bookId));
       if (!book || book.stock < item.qty) {
         return res.status(409).json({ error: `Stock insuficiente para bookId=${item.bookId}` });
@@ -122,29 +180,27 @@ async function createLoan(req, res) {
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + LOAN_DAYS);
 
-    const loan = await Loan.create({
-      userId,
-      status: "ACTIVE",
-      dueDate,
-      loanitem: items,
-    });
+    await decrementStock(loanItems);
 
     try {
-      for (const item of items) {
-        await Book.findByIdAndUpdate(item.bookId, { $inc: { stock: -item.qty } });
-      }
+      const loan = await Loan.create({
+        userId,
+        status: "ACTIVE",
+        dueDate,
+        loanitem: loanItems,
+      });
+
+      const result = await hydrateLoan(loan.id);
+      logger.info("Prestamo creado", { loanId: result.id, userId });
+
+      res.status(201).json(result);
     } catch (err) {
-      await Loan.findByIdAndDelete(loan.id);
+      await restoreStock(loanItems);
       throw err;
     }
-
-    const result = await hydrateLoan(loan.id);
-    logger.info("Prestamo creado", { loanId: result.id, userId });
-
-    res.status(201).json(result);
   } catch (err) {
     logger.error("Error al crear prestamo", { error: err.message });
-    res.status(500).json({ error: "Error al crear prestamo" });
+    res.status(err.status || 500).json({ error: err.status ? err.message : "Error al crear prestamo" });
   }
 }
 
@@ -158,6 +214,7 @@ async function returnLoan(req, res) {
 
     const loan = await Loan.findById(id);
     if (!loan) return res.status(404).json({ error: "Prestamo no encontrado" });
+    if (!isAdmin(req) && !isOwnUser(req, loan.userId)) return forbidden(res);
     if (loan.status === "RETURNED") {
       return res.status(409).json({ error: "El prestamo ya esta devuelto" });
     }
