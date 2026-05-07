@@ -5,9 +5,26 @@ const Loan = require("../../models/loan.model");
 const User = require("../../models/user.model");
 const logger = require("../../utils/logger");
 const { createFineSchema, updateFineSchema } = require("./fines.schemas");
+const FINE_STATUSES = new Set(["PENDING", "PAID"]);
 
 function isValidId(id) {
   return mongoose.isValidObjectId(id);
+}
+
+function sameId(a, b) {
+  return String(a) === String(b);
+}
+
+function isAdmin(req) {
+  return req.user?.role === "ADMIN";
+}
+
+function isOwnUser(req, userId) {
+  return sameId(req.user?.id, userId);
+}
+
+function forbidden(res) {
+  return res.status(403).json({ error: "No tienes permisos para operar esta multa" });
 }
 
 async function hydrateFine(fineOrId) {
@@ -48,10 +65,18 @@ async function listFines(req, res) {
 
     if (req.query.userId) {
       if (!isValidId(req.query.userId)) return res.status(400).json({ error: "userId invalido" });
+      if (!isAdmin(req) && !isOwnUser(req, req.query.userId)) return forbidden(res);
       where.userId = req.query.userId;
+    } else if (!isAdmin(req)) {
+      where.userId = req.user.id;
     }
 
-    if (req.query.status) where.status = req.query.status;
+    if (req.query.status) {
+      if (!FINE_STATUSES.has(req.query.status)) {
+        return res.status(400).json({ error: "status invalido" });
+      }
+      where.status = req.query.status;
+    }
 
     const fines = await Fine.find(where).sort({ createdAt: -1 });
     const result = await Promise.all(fines.map((fine) => hydrateFine(fine.id)));
@@ -71,6 +96,7 @@ async function getFine(req, res) {
 
     const fine = await hydrateFine(id);
     if (!fine) return res.status(404).json({ error: "Multa no encontrada" });
+    if (!isAdmin(req) && !isOwnUser(req, fine.userId)) return forbidden(res);
 
     res.json(fine);
   } catch (err) {
@@ -98,6 +124,9 @@ async function createFine(req, res) {
 
     if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
     if (!loan) return res.status(404).json({ error: "Prestamo no encontrado" });
+    if (!sameId(loan.userId, userId)) {
+      return res.status(400).json({ error: "El prestamo no pertenece al usuario indicado" });
+    }
 
     const fine = await Fine.create({
       userId,
@@ -130,10 +159,21 @@ async function updateFine(req, res) {
 
     const exists = await Fine.findById(id);
     if (!exists) return res.status(404).json({ error: "Multa no encontrada" });
+    if (!isAdmin(req) && !isOwnUser(req, exists.userId)) return forbidden(res);
 
     const data = { ...parsed.data };
+    if (!isAdmin(req)) {
+      const fields = Object.keys(data);
+      if (fields.some((field) => field !== "status") || data.status !== "PAID") {
+        return forbidden(res);
+      }
+    }
+
     if (data.status === "PAID" && exists.status !== "PAID") {
       data.paidAt = new Date();
+    }
+    if (data.status === "PENDING" && exists.status === "PAID") {
+      data.paidAt = null;
     }
 
     const updated = await Fine.findByIdAndUpdate(id, data, {
