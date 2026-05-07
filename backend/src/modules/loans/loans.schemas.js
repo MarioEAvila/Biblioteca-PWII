@@ -12,4 +12,10 @@ const createLoanSchema = z.object({
   ).min(1, "Debes enviar al menos 1 libro"),
 });
 
-module.exports = { createLoanSchema, objectIdSchema };
+const createLoanRequestSchema = createLoanSchema;
+
+const rejectLoanRequestSchema = z.object({
+  reason: z.string().min(1, "reason es requerido").optional(),
+});
+
+module.exports = { createLoanSchema, createLoanRequestSchema, rejectLoanRequestSchema, objectIdSchema };
