@@ -19,7 +19,7 @@ const registerSchema = z.object({
   name: z.string().min(1, "Nombre requerido"),
   email: z.string().email("Email invalido"),
   password: z.string().min(6, "Password minimo 6 caracteres"),
-  phone: z.string().min(1, "Telefono requerido").optional(),
+  phone: z.string().optional().or(z.literal("")),
 });
 
 function sanitizeUser(user) {

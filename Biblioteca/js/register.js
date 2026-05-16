@@ -6,6 +6,7 @@ document.getElementById("registerForm").addEventListener("submit", async functio
   const name     = document.getElementById("nombre").value.trim();
   const email    = document.getElementById("correo").value.trim();
   const password = document.getElementById("nuevaPassword").value;
+  const phone = document.getElementById("telefono").value.trim();
   const btnSubmit = e.target.querySelector("button[type='submit']");
   const errorDiv  = document.getElementById("registerError");
 
@@ -18,7 +19,7 @@ document.getElementById("registerForm").addEventListener("submit", async functio
     const res = await fetch(`${API_URL}/auth/register`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ name, email, password }),
+      body:    JSON.stringify({ name, email, password, phone }),
     });
 
     const data = await res.json();
