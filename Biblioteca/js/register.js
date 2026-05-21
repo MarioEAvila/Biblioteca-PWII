@@ -1,4 +1,6 @@
-const API_URL = "http://localhost:3000";
+const API_URL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+  ? "http://localhost:3000"
+  : "https://biblioteca-pwii.onrender.com";
 
 document.getElementById("registerForm").addEventListener("submit", async function (e) {
   e.preventDefault();
