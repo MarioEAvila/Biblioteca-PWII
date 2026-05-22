@@ -1,48 +1,63 @@
 // ============================================
-// admin-autorizar.js — Autorizar/Rechazar solicitudes de préstamo
-// Carga las solicitudes con status=PENDING y permite aprobarlas o rechazarlas
+// admin-autorizar.js — Autorizar/Rechazar solicitudes
+// CORREGIDO: apiFetch devuelve JSON directo
 // ============================================
 
 let allRequests = [];
 
-// ---- CARGAR SOLICITUDES PENDIENTES ----
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function getTbody() {
+  return document.getElementById("solicitudesTable");
+}
+
 async function loadRequests() {
-  const tbody = document.getElementById("solicitudesTable");
+  const tbody = getTbody();
+  if (!tbody) return;
+
   tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px;">Cargando...</td></tr>`;
 
   try {
-    const res = await apiFetch("/loans/requests?status=PENDING");
+    const data = await apiFetch("/loans/requests?status=PENDING");
 
-    if (!res.ok) {
-      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:#c62828;">Error al cargar solicitudes</td></tr>`;
-      return;
+    if (Array.isArray(data)) {
+      allRequests = data;
+    } else if (data && Array.isArray(data.requests)) {
+      allRequests = data.requests;
+    } else if (data && Array.isArray(data.data)) {
+      allRequests = data.data;
+    } else {
+      allRequests = [];
     }
 
-    const data = await res.json();
-    // El backend puede devolver array directo o {requests: [...]}
-    allRequests = Array.isArray(data) ? data : (data.requests || data.data || []);
     renderRequests(allRequests);
-
   } catch (err) {
     console.error("Error cargando solicitudes:", err);
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:#c62828;">Error de conexión</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:#c62828;">Error: ${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
-// ---- RENDERIZAR TABLA ----
 function renderRequests(requests) {
-  const tbody = document.getElementById("solicitudesTable");
+  const tbody = getTbody();
+  if (!tbody) return;
+
   tbody.innerHTML = "";
 
-  if (!requests.length) {
+  if (!requests || requests.length === 0) {
     tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:#666;">No hay solicitudes pendientes</td></tr>`;
     return;
   }
 
   requests.forEach((req) => {
-    // Cada solicitud puede tener varios libros (items). Hacemos una fila por cada uno.
     const items = req.items || [];
-    const userName = req.user?.name || req.userId?.name || "—";
+    const userName = req.user?.name || req.userId?.name || req.userName || "—";
+    const id = req.id || req._id;
 
     if (items.length === 0) {
       const tr = document.createElement("tr");
@@ -57,14 +72,13 @@ function renderRequests(requests) {
 
     items.forEach((item, idx) => {
       const book = item.book || item.bookId || {};
-      const fecha = new Date(req.createdAt).toLocaleDateString("es-MX");
+      const fecha = req.createdAt ? new Date(req.createdAt).toLocaleDateString("es-MX") : "—";
       const tr = document.createElement("tr");
 
-      // Solo en la primera fila ponemos los botones (para no duplicarlos)
       const botones = idx === 0
         ? `
-          <td><button class="btn-autorizar" onclick="autorizar('${req.id || req._id}')">Aprobar</button></td>
-          <td><button class="btn-rechazar" onclick="rechazar('${req.id || req._id}')">Rechazar</button></td>
+          <td><button style="background:#2e7d32; color:white; border:none; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:13px;" onclick="autorizar('${id}')">Aprobar</button></td>
+          <td><button style="background:#c62828; color:white; border:none; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:13px;" onclick="rechazar('${id}')">Rechazar</button></td>
         `
         : `<td></td><td></td>`;
 
@@ -80,66 +94,46 @@ function renderRequests(requests) {
   });
 }
 
-// ---- ACCIONES ----
 async function autorizar(id) {
   if (!confirm("¿Aprobar esta solicitud de préstamo?")) return;
 
   try {
-    const res = await apiFetch(`/loans/requests/${id}/approve`, {
-      method: "PUT",
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert("Error al aprobar: " + (err.error || res.statusText));
-      return;
-    }
-
+    await apiFetch(`/loans/requests/${id}/approve`, { method: "PUT" });
     alert("✅ Solicitud aprobada. Se generó el préstamo.");
     loadRequests();
-
   } catch (err) {
-    console.error(err);
-    alert("Error de conexión al aprobar");
+    alert("Error: " + err.message);
   }
 }
 
 async function rechazar(id) {
   const motivo = prompt("Motivo del rechazo (opcional):");
-  if (motivo === null) return; // Canceló
+  if (motivo === null) return;
 
   try {
-    const res = await apiFetch(`/loans/requests/${id}/reject`, {
+    await apiFetch(`/loans/requests/${id}/reject`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rejectionReason: motivo || "Sin motivo especificado" }),
+      body: { rejectionReason: motivo || "Sin motivo especificado" },
     });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert("Error al rechazar: " + (err.error || res.statusText));
-      return;
-    }
-
     alert("❌ Solicitud rechazada.");
     loadRequests();
-
   } catch (err) {
-    console.error(err);
-    alert("Error de conexión al rechazar");
+    alert("Error: " + err.message);
   }
 }
 
-// ---- BÚSQUEDA ----
 function applySearch() {
-  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+  const input = document.getElementById("searchInput");
+  if (!input) return;
+  const q = input.value.trim().toLowerCase();
+
   if (!q) {
     renderRequests(allRequests);
     return;
   }
 
   const filtered = allRequests.filter((req) => {
-    const userName = (req.user?.name || req.userId?.name || "").toLowerCase();
+    const userName = (req.user?.name || req.userId?.name || req.userName || "").toLowerCase();
     const hasBook = (req.items || []).some((item) => {
       const book = item.book || item.bookId || {};
       return (book.title || "").toLowerCase().includes(q) ||
@@ -151,20 +145,10 @@ function applySearch() {
   renderRequests(filtered);
 }
 
-// ---- HELPER ----
-function escapeHtml(str) {
-  if (str == null) return "";
-  return String(str)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-// ---- EVENTOS ----
 document.addEventListener("DOMContentLoaded", () => {
   loadRequests();
 
-  const searchBtn = document.querySelector(".search-container .btn-primary");
+  const searchBtn = document.querySelector(".search-container .btn-primary, .search-container button");
   const searchInput = document.getElementById("searchInput");
 
   if (searchBtn) searchBtn.addEventListener("click", applySearch);
