@@ -1,55 +1,72 @@
 // ============================================
-// admin-prestamos.js — Gestión de todos los préstamos del sistema
-// Lista, busca y permite marcar como devuelto
+// admin-prestamos.js — Gestión de préstamos
+// CORREGIDO: apiFetch devuelve JSON directo
 // ============================================
 
 let allLoans = [];
 
-// ---- CARGAR PRÉSTAMOS ----
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function getTbody() {
+  return document.getElementById("loansTable") || document.querySelector("table tbody");
+}
+
 async function loadLoans() {
-  const tbody = document.getElementById("loansTable") || document.querySelector("table tbody");
+  const tbody = getTbody();
+  if (!tbody) return;
+
   tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px;">Cargando...</td></tr>`;
 
   try {
-    const res = await apiFetch("/loans");
+    const data = await apiFetch("/loans");
 
-    if (!res.ok) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:#c62828;">Error al cargar préstamos</td></tr>`;
-      return;
+    if (Array.isArray(data)) {
+      allLoans = data;
+    } else if (data && Array.isArray(data.loans)) {
+      allLoans = data.loans;
+    } else if (data && Array.isArray(data.data)) {
+      allLoans = data.data;
+    } else {
+      allLoans = [];
     }
 
-    const data = await res.json();
-    allLoans = Array.isArray(data) ? data : (data.loans || data.data || []);
     renderLoans(allLoans);
-
   } catch (err) {
     console.error("Error cargando préstamos:", err);
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:#c62828;">Error de conexión</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:#c62828;">Error: ${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
-// ---- RENDERIZAR TABLA ----
 function renderLoans(loans) {
-  const tbody = document.getElementById("loansTable") || document.querySelector("table tbody");
+  const tbody = getTbody();
+  if (!tbody) return;
+
   tbody.innerHTML = "";
 
-  if (!loans.length) {
+  if (!loans || loans.length === 0) {
     tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:20px; color:#666;">No hay préstamos registrados</td></tr>`;
     return;
   }
 
   loans.forEach((loan) => {
-    const idCorto = (loan.id || loan._id || "").toString().slice(-6);
-    const userName = loan.user?.name || loan.userId?.name || "—";
-    const libros = (loan.loanitem || [])
-      .map(item => (item.book?.title || item.bookId?.title || "Libro"))
+    const idCorto = String(loan.id || loan._id || "").slice(-6);
+    const userName = loan.user?.name || loan.userId?.name || loan.userName || "—";
+
+    const libros = (loan.loanitem || loan.items || [])
+      .map(item => item.book?.title || item.bookId?.title || item.title || "Libro")
       .join(", ") || "—";
+
     const fechaPrestamo = loan.loanDate ? new Date(loan.loanDate).toLocaleDateString("es-MX") : "—";
     const fechaDevolucion = loan.returnDate
       ? new Date(loan.returnDate).toLocaleDateString("es-MX")
       : (loan.dueDate ? "Vence: " + new Date(loan.dueDate).toLocaleDateString("es-MX") : "—");
 
-    // Badge de estado
     const statusColors = {
       ACTIVE: "#2e7d32",
       RETURNED: "#666",
@@ -60,11 +77,10 @@ function renderLoans(loans) {
       RETURNED: "Devuelto",
       OVERDUE: "Vencido",
     };
-    const statusBadge = `<span style="background:${statusColors[loan.status] || "#999"}; color:white; padding:3px 10px; border-radius:12px; font-size:12px;">${statusText[loan.status] || loan.status}</span>`;
+    const statusBadge = `<span style="background:${statusColors[loan.status] || "#999"}; color:white; padding:3px 10px; border-radius:12px; font-size:12px;">${statusText[loan.status] || loan.status || "—"}</span>`;
 
-    // Botón de acción según estado
-    const accion = loan.status === "ACTIVE" || loan.status === "OVERDUE"
-      ? `<button class="btn-primary" style="padding:5px 12px; font-size:13px;" onclick="marcarDevuelto('${loan.id || loan._id}')">Marcar devuelto</button>`
+    const accion = (loan.status === "ACTIVE" || loan.status === "OVERDUE")
+      ? `<button style="background:#2e7d32; color:white; border:none; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:13px;" onclick="marcarDevuelto('${loan.id || loan._id}')">Marcar devuelto</button>`
       : `<span style="color:#999;">—</span>`;
 
     const tr = document.createElement("tr");
@@ -81,42 +97,32 @@ function renderLoans(loans) {
   });
 }
 
-// ---- MARCAR COMO DEVUELTO ----
 async function marcarDevuelto(id) {
   if (!confirm("¿Marcar este préstamo como devuelto?")) return;
 
   try {
-    const res = await apiFetch(`/loans/${id}/return`, {
-      method: "PUT",
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert("Error: " + (err.error || res.statusText));
-      return;
-    }
-
+    await apiFetch(`/loans/${id}/return`, { method: "PUT" });
     alert("✅ Préstamo marcado como devuelto. Stock actualizado.");
     loadLoans();
-
   } catch (err) {
-    console.error(err);
-    alert("Error de conexión");
+    alert("Error: " + err.message);
   }
 }
 
-// ---- BÚSQUEDA ----
 function applySearch() {
-  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+  const input = document.getElementById("searchInput");
+  if (!input) return;
+  const q = input.value.trim().toLowerCase();
+
   if (!q) {
     renderLoans(allLoans);
     return;
   }
 
   const filtered = allLoans.filter((loan) => {
-    const userName = (loan.user?.name || loan.userId?.name || "").toLowerCase();
-    const hasBook = (loan.loanitem || []).some((item) => {
-      const title = (item.book?.title || item.bookId?.title || "").toLowerCase();
+    const userName = (loan.user?.name || loan.userId?.name || loan.userName || "").toLowerCase();
+    const hasBook = (loan.loanitem || loan.items || []).some((item) => {
+      const title = (item.book?.title || item.bookId?.title || item.title || "").toLowerCase();
       return title.includes(q);
     });
     return userName.includes(q) || hasBook;
@@ -125,16 +131,6 @@ function applySearch() {
   renderLoans(filtered);
 }
 
-// ---- HELPER ----
-function escapeHtml(str) {
-  if (str == null) return "";
-  return String(str)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-// ---- EVENTOS ----
 document.addEventListener("DOMContentLoaded", () => {
   loadLoans();
 
